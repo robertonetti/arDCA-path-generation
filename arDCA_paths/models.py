@@ -75,8 +75,70 @@ def get_entropic_order_with_inverse(fi: torch.Tensor, index: int) -> (torch.Tens
 
     return order, inverse_order
 
-def energy_third(model: nn.Module, X: torch.Tensor) -> torch.Tensor:
+def energy_third(model: nn.Module, X: torch.Tensor, device: torch.device) -> torch.Tensor:
     """Computes the energy of third sequence given first and second.
+    Args:
+        model (nn.Module): arDCA model.
+        X (torch.Tensor): Input MSA one-hot encoded.
+    """
+    with torch.no_grad():
+        model = model.to(device)
+        X = X.to(device)
+        if X.dim() != 3:
+            raise ValueError("X must be a 3D tensor")
+        n_samples, L_data, q = X.shape
+        if L_data != model.L:
+            raise ValueError("X and model should have same sequence length L")
+        logP = torch.zeros(n_samples, device=device)
+        for i in range(2*model.L//3, model.L):
+            logZ = torch.logsumexp(model.h[i] + X[:, :i, :].view(n_samples, -1) @ model.J[i, :, :i, :].view(q, -1).mT, dim=-1)  # tensor(n)
+            J_term = X[:, :i, :].view(n_samples, -1) @ model.J[i, :, :i, :].view(q, -1).mT 
+            J_term = (J_term * X[:, i, :]).sum(dim=-1)
+            exponent = (X[:, i, :].view(n_samples, -1) @ model.h[i]) + J_term 
+            logP += exponent - logZ
+            # Dealloca variabili temporanee per evitare accumulo
+            del logZ, J_term, exponent
+        # Sposta il modello su CPU per liberare GPU memory
+        model = model.cpu()
+        # Forza pulizia GPU
+        torch.cuda.empty_cache()
+        del model, X
+        return -logP
+
+def energy_second(model: nn.Module, X: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """Computes the energy of second sequence given first.
+    Args:
+        model (nn.Module): arDCA model.
+        X (torch.Tensor): Input MSA one-hot encoded.
+    """
+    with torch.no_grad():
+        model = model.to(device)
+        X = X.to(device)
+        if X.dim() != 3:
+            raise ValueError("X must be a 3D tensor")
+        n_samples, L_data, q = X.shape
+        if L_data != model.L:
+            raise ValueError("X and model should have same sequence length L")
+        logP = torch.zeros(n_samples, device=device)
+        for i in range(model.L//2, model.L):
+            logZ = torch.logsumexp(model.h[i] + X[:, :i, :].view(n_samples, -1) @ model.J[i, :, :i, :].view(q, -1).mT, dim=-1)  # tensor(n)
+            J_term = X[:, :i, :].view(n_samples, -1) @ model.J[i, :, :i, :].view(q, -1).mT 
+            J_term = (J_term * X[:, i, :]).sum(dim=-1)
+            exponent = (X[:, i, :].view(n_samples, -1) @ model.h[i]) + J_term 
+            logP += exponent - logZ
+            # Dealloca variabili temporanee per evitare accumulo
+            del logZ, J_term, exponent
+        # Sposta il modello su CPU per liberare GPU memory
+        model = model.cpu()
+        # Forza pulizia GPU
+        torch.cuda.empty_cache()
+        del model, X
+        return -logP
+
+def energy_third_conditioned_first(model: nn.Module, X: torch.Tensor) -> torch.Tensor:
+    """Computes the energy of third sequence given first and second,
+    but conditioning only on the first part of the sequence.
+    
     Args:
         model (nn.Module): arDCA model.
         X (torch.Tensor): Input MSA one-hot encoded.
@@ -86,25 +148,33 @@ def energy_third(model: nn.Module, X: torch.Tensor) -> torch.Tensor:
     n_samples, L_data, q = X.shape
     if L_data != model.L:
         raise ValueError("X and model should have same sequence length L")
-    energy = torch.zeros(n_samples)
-    logZ   = torch.zeros(n_samples)
-    logP   = torch.zeros(n_samples)
+    
+    logZ = torch.zeros(n_samples)
+    logP = torch.zeros(n_samples)
+
     for i in range(2*model.L//3, model.L):
-        #                           q                               n,[:i]q x [:i]q, q -> n,q                  n,q 
-        logZ = torch.logsumexp(model.h[i] + X[:, :i, :].view(n_samples, -1) @ model.J[i, :, :i, :].view(q, -1).mT, dim=-1)  # tensor(n)
-        #                                 (n,q) x q -> n
-        # h_term = X[:, i, :].view(n_samples, -1) @ model.h[i]
-        # print("h_term", h_term.shape, ", ", h_term)
-        # #                                 (n,q) x q -> n
-        J_term = X[:, :i, :].view(n_samples, -1) @ model.J[i, :, :i, :].view(q, -1).mT 
-        J_term = (J_term * X[:, i, :]).sum(dim=-1)
-        # print("J_term", J_term.shape, ", ", J_term)
-        #                                       n,q x q -> n                     n,[:i]q x [:i]q, q -> n,q ->sum-> n
-        exponent = (X[:, i, :].view(n_samples, -1) @ model.h[i]) + J_term 
+        # Creo il tensore J_ar per la posizione i
+        J_ar = model.J[i, :, :i, :].view(q, -1)  # q x (i*q)
+        
+        # Creo una maschera per J_ar per escludere la parte centrale
+        mask = torch.ones_like(J_ar) 
+        start_idx = model.L//3  * q
+        end_idx = 2 * model.L//3 * q
+        mask[:, start_idx:end_idx] = 0
+        J_ar = J_ar * mask
+        
+        # Calcolo logZ con il J_ar mascherato
+        X_ar = X[:, :i, :].view(n_samples, -1) # n x (i*q)
+        # Calcolo J_term con il J_ar mascherato
+        J_term = (J_ar @ X_ar.T).T # n x q
+        logZ = torch.logsumexp(model.h[i] + J_term, dim=-1) 
+        
+        # Calcolo l'esponente e aggiorno logP   
+        J_term = (J_term * X[:, i, :]).sum(dim=-1) # n
+        exponent = (X[:, i, :].view(n_samples, -1) @ model.h[i]) + J_term
         logP += exponent - logZ
-    return  - logP
 
-
+    return -logP
 
 # Define the loss function
 def loss_fn(
@@ -227,7 +297,7 @@ class EarlyStopping:
         else:
             return False
 
-class arDCA(nn.Module):
+class arDCA_paths(nn.Module):
     def __init__(
         self,
         L: int,
@@ -241,7 +311,7 @@ class arDCA(nn.Module):
             L (int): Number of residues in the MSA.
             q (int): Number of states for the categorical variables.
         """
-        super(arDCA, self).__init__()
+        super(arDCA_paths, self).__init__()
         self.L = L
         self.q = q
         self.h = nn.Parameter(torch.randn(L, q) * 1e-4)
@@ -310,6 +380,44 @@ class arDCA(nn.Module):
         prob_i = torch.softmax(beta * logit_i, dim=-1)
         
         return prob_i
+    
+
+    def forward_condition_only_start(
+        self,
+        X: torch.Tensor,
+        beta: float = 1.0,
+    ) -> torch.Tensor:
+        """Predicts the probability of next token given the previous ones.
+        Args:
+            X (torch.Tensor): Input MSA one-hot encoded.
+            beta (float, optional): Inverse temperature. Defaults to 1.0.
+            
+        Returns:
+            torch.Tensor: Probability of the next token.
+        """
+        # X has to be a 3D tensor of shape (n_samples, l, q) with l < L
+        if X.dim() != 3:
+            raise ValueError("X must be a 3D tensor")
+        if X.shape[1] >= self.L:
+            raise ValueError("X must have a second dimension smaller than L")
+        n_samples, residue_idx = X.shape[0], X.shape[1]
+
+        J_ar = self.J[residue_idx, :, :residue_idx, :].view(self.q, -1) # q x (residue_idx*q)
+        
+        # Creo una maschera per J_ar quando residue_idx > 2*L/3
+       
+        mask = torch.ones_like(J_ar)
+        # Calcolo l'indice di inizio della sezione L:2*L in J_ar
+        start_idx = self.L // 3 * self.q
+        end_idx = 2 * self.L // 3 * self.q
+        mask[:, start_idx:end_idx] = 0
+        J_ar = J_ar * mask
+
+        X_ar = X.view(n_samples, -1)
+        logit_i = self.h[residue_idx] + torch.einsum("ij,nj->ni", J_ar, X_ar)
+        prob_i = torch.softmax(beta * logit_i, dim=-1)
+        
+        return prob_i
 
     def compute_stat_energy(
         self,
@@ -333,6 +441,7 @@ class arDCA(nn.Module):
             prob_i = self.forward(X_use[:, :residue_idx, :], beta=beta)
             logZ_i = torch.log(prob_i.sum(dim=-1) + 1e-10)
             logP = torch.log(prob_i.gather(1, X_use[:, residue_idx, :].argmax(dim=1, keepdim=True)).squeeze() + 1e-10)
+            
             stat_E += - logP + logZ_i
 
         return stat_E.detach()
@@ -441,7 +550,7 @@ class arDCA(nn.Module):
         weights: torch.Tensor,
         optimizer: torch.optim.Optimizer,
         max_epochs: int = 10000,
-        epsconv: float = 1e-4,
+        epsconv: float = 5e-3,
         pseudo_count: float = 0.0,
         use_entropic_order: bool = True,
         fix_first_residue: bool = False,
@@ -501,7 +610,7 @@ class arDCA(nn.Module):
             fij_test = get_freq_two_points(X_test,  weights=weights_test, pseudo_count=pseudo_count)
 
         self.h.data = torch.log(fi_target + 1e-10)
-        callback = EarlyStopping(patience=10, epsconv=epsconv)
+        callback = EarlyStopping(patience=5, epsconv=epsconv)
 
         # Set Updating Bar
         pbar = tqdm(
@@ -512,7 +621,7 @@ class arDCA(nn.Module):
             ascii="-#",
             desc="Loss: inf"
         )
-        metrics = {'Train Accuracy': "0.0"}
+        metrics = {'Callback Count': "0", 'Train Accuracy': "0.0"}
         if X_test is not None:
             metrics.update({'Test Accuracy': "0.0",
                 'Shuffled Test Accuracy': "0.0"})
@@ -543,23 +652,11 @@ class arDCA(nn.Module):
 
             if epoch % 10 == 0:
                 # Compute Accuracy
-                metrics = {'Train Accuracy': f"{self.test_fn(X):.5f}"}
+                metrics = {'Callback Count': f"{callback.counter}", 'Train Accuracy': f"{self.test_fn(X):.5f}"}
                 if X_test is not None:
-                    X_test_shuffle = X_test.clone()
-                    X_test_shuffle[:, index:, :] = X_test[torch.randperm(X_test.size(0)), index:, :]
-                    metrics.update({'Test Accuracy':           f"{self.test_fn(X_test):.5f}",
-                                    'Shuffled Test Accuracy':  f"{self.test_fn(X_test_shuffle):.5f}"})
+                    metrics.update({'Test Accuracy':           f"{self.test_fn(X_test):.5f}"})
                 pbar.set_postfix(metrics)
-                # Compute Training Pearson Cij
-                samples = self.sample_autoregressive(X[:, :index, :])
-                data, data_target = samples[:, index:, :], X[:, index:, :]
-                pi, pij  = get_freq_single_point(data=data, weights=weights, pseudo_count=pseudo_count), get_freq_two_points(  data=data, weights=weights, pseudo_count=pseudo_count)
-                fi_target_pred, fij_target_pred  = get_freq_single_point(data=data_target, weights=weights, pseudo_count=pseudo_count), get_freq_two_points(  data=data_target, weights=weights, pseudo_count=pseudo_count)
-                pearson_cij_prediction, _ = get_correlation_two_points(fi=fi_target_pred, fij=fij_target_pred, pi=pi, pij=pij)
-                metrics['Pearson cij (Train)'] = f"{pearson_cij_prediction:.5f}"
-                ro_cij_prediction.append(pearson_cij_prediction)
-
-
+       
                 if X_test is not None:
                     with torch.no_grad():
                         val_loss, val_log_likelihood = self.loss_fn(self, X_test, weights_test, fi_test, fij_test, reg_h=reg_h, reg_J=reg_J)
@@ -567,16 +664,18 @@ class arDCA(nn.Module):
                         val_log_likelihoods.append(val_log_likelihood.item())
                         metrics['Val Loss'] = f"{val_loss.item():.5f}"
 
-                    samples = self.sample_autoregressive(X_test[:, :index, :]) 
-                    data, data_target = samples[:, index:, :], X_test[:, index:, :]
-                    pi, pij = get_freq_single_point(data), get_freq_two_points(data)
-                    fi_target_pred, fij_target_pred = get_freq_single_point(data=data_target, weights=weights_test, pseudo_count=pseudo_count), get_freq_two_points(data=data_target, weights=weights_test, pseudo_count=pseudo_count)
-                    pearson_cij_prediction_test, _ = get_correlation_two_points(fi=fi_target_pred, fij=fij_target_pred, pi=pi, pij=pij)
-                    metrics['Pearson cij (Test)'] = f"{pearson_cij_prediction_test:.5f}"
-                    ro_cij_prediction_test.append(pearson_cij_prediction_test)
+                    # Early stopping basato sulla validation loss
+                    if callback(val_loss.item()):
+                        pbar.set_postfix(metrics)
+                        break
+
                 pbar.set_postfix(metrics)
 
-            if callback(loss):
+            # if callback(loss):
+            #     break
+
+            # Se non c'è test set, usa la training loss per l'early stopping
+            if X_test is None and callback(loss):
                 break
 
         pbar.close()

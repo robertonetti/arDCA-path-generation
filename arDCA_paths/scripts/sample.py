@@ -6,8 +6,8 @@ from adabmDCA.fasta import (
     get_tokens,
     write_fasta,
 )
-from arDCA import arDCA
-from arDCA.parser import add_args_sample
+from arDCA_paths import arDCA_paths
+from arDCA_paths.parser import add_args_sample
 from adabmDCA.dataset import DatasetDCA
 from adabmDCA.utils import resample_sequences, get_device, get_dtype
 from adabmDCA.functional import one_hot
@@ -54,7 +54,7 @@ def main():
     print(f"Loading parameters from {args.path_params}...")
     params = torch.load(args.path_params)
     L, q = params["h"].shape
-    model = arDCA(L=L, q=q).to(device=device, dtype=dtype)
+    model = arDCA_paths(L=L, q=q).to(device=device, dtype=dtype)
     model.load_state_dict(params)
     
     # Sample from the model

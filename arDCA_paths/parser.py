@@ -14,7 +14,7 @@ def add_args_dca(parser : argparse.ArgumentParser) -> argparse.ArgumentParser:
     dca_args.add_argument("--lr",                 type=float, default=0.005,        help="(Defaults to 0.005). Learning rate.")
     dca_args.add_argument("--reg_h",              type=float, default=1e-6,         help="(Defaults to 1e-6). L2 regularization parameter for the fields.")
     dca_args.add_argument("--reg_J",              type=float, default=1e-4,         help="(Defaults to 1e-4). L2 regularization parameter for the couplings.")
-    dca_args.add_argument("--epsconv",            type=float, default=1e-2,         help="(Defaults to 1e-2). Convergence threshold on the loss function.")
+    dca_args.add_argument("--epsconv",            type=float, default=5e-2,         help="(Defaults to 1e-2). Convergence threshold on the loss function.")
     dca_args.add_argument("--nepochs",            type=int,   default=1000,         help="(Defaults to 1000). Maximum number of epochs allowed.")
     dca_args.add_argument("--pseudocount",        type=float, default=None,         help="(Defaults to None). Pseudo count for the single and two-sites statistics. Acts as a regularization. If None, it is set to 1/Meff.")
     dca_args.add_argument("--seed",               type=int,   default=0,            help="(Defaults to 0). Seed for the random number generator.")

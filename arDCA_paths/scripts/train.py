@@ -13,9 +13,9 @@ from adabmDCA.stats import get_freq_single_point, get_freq_two_points, get_corre
 from adabmDCA.utils import get_device, get_dtype
 from adabmDCA.functional import one_hot
 
-from arDCA import arDCA
-from arDCA.parser import add_args_train
-from arDCA.dataset import DatasetDCA
+from arDCA_paths import arDCA_paths
+from arDCA_paths.parser import add_args_train
+from arDCA_paths.dataset import DatasetDCA
 
 
 from typing import Optional
@@ -86,6 +86,16 @@ def main():
         dtype          = dtype
         )
 
+    l = 0
+    if args.mode == "second":
+        print("Reducing the dataset to the first third and last third of the sequences.")
+        l = dataset.get_num_residues()//3
+        print("L/3: ", l)
+        data_start = dataset.data[:, :l]
+        data_end = dataset.data[:, 2*l:]
+        dataset.data = torch.cat((data_start, data_end), dim=1)
+
+
     # Compute statistics of the data
     L = dataset.get_num_residues()
     q = dataset.get_num_states()
@@ -99,7 +109,7 @@ def main():
     graph = torch.load(args.path_graph) if args.path_graph else None
     print("\n")
 
-    model = arDCA(L=L, q=q, graph=graph, model=args.mode).to(device=device) # model = arDCA(L=L, q=q).to(device=device, dtype=dtype)
+    model = arDCA_paths(L=L, q=q, graph=graph, model=args.mode).to(device=device) # model = arDCA(L=L, q=q).to(device=device, dtype=dtype)
     # tokens = get_tokens(args.alphabet)
     
     if args.mode == "third":
@@ -154,6 +164,11 @@ def main():
             device         = device,
             dtype          = dtype,
         )
+        if args.mode == "second":
+            data_start = dataset_test.data[:, :l]
+            data_end = dataset_test.data[:, 2*l:]
+            dataset_test.data = torch.cat((data_start, data_end), dim=1)
+
         if args.batch_size is None: 
             data_test_oh = one_hot(dataset_test.data, num_classes=q).to(dtype)
 
