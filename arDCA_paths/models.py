@@ -11,6 +11,7 @@ from adabmDCA.stats import get_correlation_two_points, get_freq_single_point, ge
 import torch
 import torch.nn.functional as F
 import torchmetrics
+import copy
 
 def get_freq_single_point_batches(X, weights, pseudo_count, batch_size, num_classes, device):
 
@@ -610,7 +611,15 @@ class arDCA_paths(nn.Module):
             fij_test = get_freq_two_points(X_test,  weights=weights_test, pseudo_count=pseudo_count)
 
         self.h.data = torch.log(fi_target + 1e-10)
-        callback = EarlyStopping(patience=5, epsconv=epsconv)
+        callback = EarlyStopping(patience=30, epsconv=epsconv)
+
+        # Track del best model durante il training.
+        # Inizializzo con lo stato corrente per garantire sempre un checkpoint valido.
+        self.best_state_dict = copy.deepcopy(self.state_dict())
+        self.best_loss = float("inf")
+        # In presenza di X_test consideriamo best rispetto alla validation loss,
+        # altrimenti rispetto alla training loss.
+        self.best_loss_source = "val" if X_test is not None else "train"
 
         # Set Updating Bar
         pbar = tqdm(
@@ -640,6 +649,11 @@ class arDCA_paths(nn.Module):
             losses.append(loss_value)
             log_likelihoods.append(log_likelihood.item())
 
+            # Se non c'e' validation, il best model viene aggiornato sulla training loss.
+            if X_test is None and loss_value < self.best_loss:
+                self.best_loss = loss_value
+                self.best_state_dict = copy.deepcopy(self.state_dict())
+
             loss.backward()
             optimizer.step()
 
@@ -663,6 +677,11 @@ class arDCA_paths(nn.Module):
                         val_losses.append(val_loss.item())
                         val_log_likelihoods.append(val_log_likelihood.item())
                         metrics['Val Loss'] = f"{val_loss.item():.5f}"
+
+                        # Con validation disponibile, il best model e' definito dalla val_loss minima.
+                        if val_loss.item() < self.best_loss:
+                            self.best_loss = val_loss.item()
+                            self.best_state_dict = copy.deepcopy(self.state_dict())
 
                     # Early stopping basato sulla validation loss
                     if callback(val_loss.item()):
@@ -754,7 +773,14 @@ class arDCA_paths(nn.Module):
             test_dataset = TensorDataset(X_test)
             test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
         
-        callback = EarlyStopping(patience=5, epsconv=epsconv)
+        callback = EarlyStopping(patience=30, epsconv=epsconv)
+
+        # Track del best model durante il training batch.
+        # In questo metodo l'early stopping attivo usa la training loss media di epoca,
+        # quindi usiamo la stessa metrica anche per il best checkpoint.
+        self.best_state_dict = copy.deepcopy(self.state_dict())
+        self.best_loss = float("inf")
+        self.best_loss_source = "train"
         
        # Set Updating Bar
         pbar = tqdm(
@@ -802,6 +828,12 @@ class arDCA_paths(nn.Module):
 
             losses.append(epoch_loss)
             log_likelihoods.append(epoch_log_likelihood)
+
+            # Aggiorna il best model se la loss media di epoca migliora.
+            if epoch_loss < self.best_loss:
+                self.best_loss = epoch_loss
+                self.best_state_dict = copy.deepcopy(self.state_dict())
+
             # Aggiornamento della barra di progresso
             pbar.update()  # defaults to +1
             pbar.set_description(f"Loss: {epoch_loss:.3f}")

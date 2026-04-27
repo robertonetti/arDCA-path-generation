@@ -69,9 +69,19 @@ def main():
     folder.mkdir(parents=True, exist_ok=True)
     
     if args.label is not None:
-        file_paths = {"params" : folder / Path(f"{args.label}_params.pth"),} 
+        file_paths = {
+            # params: ultimo modello (compatibilita' con il comportamento precedente)
+            "params" : folder / Path(f"{args.label}_params.pth"),
+            # params_best: best modello osservato durante il training
+            "params_best": folder / Path(f"{args.label}_params_best.pth"),
+        } 
     else:
-        file_paths = { "params" : folder / Path(f"params.pth"),}
+        file_paths = {
+            # params: ultimo modello (compatibilita' con il comportamento precedente)
+            "params" : folder / Path(f"params.pth"),
+            # params_best: best modello osservato durante il training
+            "params_best": folder / Path(f"params_best.pth"),
+        }
     
     # Import dataset
     print("Importing dataset...")
@@ -209,8 +219,20 @@ def main():
 
     # Save the model
     print("Saving the model...")
+    # Salva sempre l'ultimo modello allenato (last model).
     torch.save(model.state_dict(), file_paths["params"])
-    print(f"Model saved in {file_paths['params']}")
+    print(f"Last model saved in {file_paths['params']}")
+
+    # Salva il best model tracciato durante il fit.
+    # Fallback robusto: se per qualsiasi motivo non esiste best_state_dict,
+    # salva comunque lo stato corrente.
+    best_state_dict = getattr(model, "best_state_dict", model.state_dict())
+    torch.save(best_state_dict, file_paths["params_best"])
+    print(f"Best model saved in {file_paths['params_best']}")
+
+    # Log informativo su quale metrica ha definito il best model.
+    if hasattr(model, "best_loss") and hasattr(model, "best_loss_source"):
+        print(f"Best model metric ({model.best_loss_source} loss): {model.best_loss:.6f}")
 
     if args.batch_size is None:
         # First plot: Pearson correlation
